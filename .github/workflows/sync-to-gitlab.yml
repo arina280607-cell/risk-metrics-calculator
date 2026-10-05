@@ -1,0 +1,67 @@
+# Save this file as .github/workflows/sync-to-gitlab.yml in the repository.
+name: Sync to GitLab MAI
+
+'on':
+  push:
+    branches:
+      - main
+      - develop
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+# One synchronization at a time for each branch.
+concurrency:
+  group: gitlab-sync-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  sync:
+    if: github.ref == 'refs/heads/main' || github.ref == 'refs/heads/develop'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Get the current GitHub branch and its history
+        uses: actions/checkout@v7
+        with:
+          ref: ${{ github.ref_name }}
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Push this branch to GitLab MAI
+        shell: bash
+        env:
+          GITLAB_SYNC_TOKEN: ${{ secrets.GITLAB_SYNC_TOKEN }}
+          LC_ALL: C
+        run: |
+          set -euo pipefail
+
+          case "$GITHUB_REF_NAME" in
+            main|develop) ;;
+            *) echo "Unsupported branch" >&2; exit 1 ;;
+          esac
+
+          if [[ -z "${GITLAB_SYNC_TOKEN:-}" ]]; then
+            echo "The GITLAB_SYNC_TOKEN repository secret is missing." >&2
+            exit 1
+          fi
+
+          # Supply the token to Git only when authentication is requested.
+          askpass_file="$(mktemp)"
+          trap 'rm -f "$askpass_file"' EXIT
+          cat > "$askpass_file" <<'ASKPASS'
+          #!/bin/sh
+          case "$1" in
+            *Username*) printf '%s\n' 'github-sync' ;;
+            *Password*) printf '%s\n' "$GITLAB_SYNC_TOKEN" ;;
+            *) exit 1 ;;
+          esac
+          ASKPASS
+          chmod 700 "$askpass_file"
+          export GIT_ASKPASS="$askpass_file"
+          export GIT_TERMINAL_PROMPT=0
+
+          git -c credential.helper= push \
+            https://gitlab.mai.ru/ArAKozlova/risk-metrics-calculator.git \
+            "HEAD:refs/heads/$GITHUB_REF_NAME"
