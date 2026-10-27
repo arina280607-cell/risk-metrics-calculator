@@ -1,75 +1,52 @@
-# React + TypeScript + Vite
+# Frontend калькулятора DV01
 
-This template provides a minimal setup to get React working in Vite with HMR and some ESLint rules.
+React + TypeScript + CSS, сборка через Vite.
 
-Currently, two official plugins are available:
+## Локальный запуск
 
-- [@vitejs/plugin-react](https://github.com/vitejs/vite-plugin-react/blob/main/packages/plugin-react) uses [Oxc](https://oxc.rs)
-- [@vitejs/plugin-react-swc](https://github.com/vitejs/vite-plugin-react/blob/main/packages/plugin-react-swc) uses [SWC](https://swc.rs/)
+Открыть терминал в папке frontend.
 
-## React Compiler
+1. Установить зависимости командой `npm ci`.
+2. Скопировать `.env.example` в `.env.local`.
+   В PowerShell: `Copy-Item .env.example .env.local`.
+3. Запустить `npm run dev`.
+4. Открыть адрес Local из терминала.
 
-The React Compiler is not enabled on this template because of its impact on dev & build performances. To add it, see [this documentation](https://react.dev/learn/react-compiler/installation).
+## Демонстрационный режим
 
-## Expanding the ESLint configuration
+В `.env.local` установить `VITE_DEMO_MODE=true`.
 
-If you are developing a production application, we recommend updating the configuration to enable type-aware lint rules:
+Учебные сценарии:
 
-```js
-export default defineConfig([
-  globalIgnores(['dist']),
-  {
-    files: ['**/*.{ts,tsx}'],
-    extends: [
-      // Other configs...
+- RU000A000008, позиция 95000: результат -37.9905 RUB.
+- RU000A000008, позиция -95000: результат 37.9905 RUB.
+- RU000A000016: отсутствуют параметры инструмента.
 
-      // Remove tseslint.configs.recommended and replace with this
-      tseslint.configs.recommendedTypeChecked,
-      // Alternatively, use this for stricter rules
-      tseslint.configs.strictTypeChecked,
-      // Optionally, add this for stylistic rules
-      tseslint.configs.stylisticTypeChecked,
+Данные демонстрационные. В production-сборке деморежим отключён.
 
-      // Other configs...
-    ],
-    languageOptions: {
-      parserOptions: {
-        project: ['./tsconfig.node.json', './tsconfig.app.json'],
-        tsconfigRootDir: import.meta.dirname,
-      },
-      // other options...
-    },
-  },
-])
+## Подключение backend
 
-```
+В `.env.local` установить `VITE_DEMO_MODE=false`.
+В `VITE_API_URL` указать адрес backend и перезапустить Vite.
 
-You can also install [eslint-plugin-react-x](https://npmx.dev/package/eslint-plugin-react-x) and [eslint-plugin-react-dom](https://npmx.dev/package/eslint-plugin-react-dom) for React-specific lint rules:
+Frontend отправляет POST /api/v1/calculations/dv01.
 
-```js
-// eslint.config.js
-import reactX from 'eslint-plugin-react-x'
-import reactDom from 'eslint-plugin-react-dom'
+Поля JSON-запроса: isin и position_amount.
+position_amount — сумма в рублях, без дополнительной конвертации.
 
-export default defineConfig([
-  globalIgnores(['dist']),
-  {
-    files: ['**/*.{ts,tsx}'],
-    extends: [
-      // Other configs...
-      // Enable lint rules for React
-      reactX.configs['recommended-typescript'],
-      // Enable lint rules for React DOM
-      reactDom.configs.recommended,
-    ],
-    languageOptions: {
-      parserOptions: {
-        project: ['./tsconfig.node.json', './tsconfig.app.json'],
-        tsconfigRootDir: import.meta.dirname,
-      },
-      // other options...
-    },
-  },
-])
+При успехе ожидаются:
+status = SUCCESS, metric = DV01, result_value,
+result_currency = RUB, rate_shift_bps = 1.
 
-```
+При ошибке ожидается error.code.
+
+Backend должен разрешать обращения с адреса frontend
+при локальной разработке, обычно http://localhost:5173.
+
+Каждая сделка рассчитывается отдельно.
+Общий итог показывается после успешного расчёта всех актуальных сделок.
+
+## Проверки
+
+- `npm run lint`
+- `npm run build`
