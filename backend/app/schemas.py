@@ -1,6 +1,7 @@
 from decimal import Decimal
 from typing import Annotated, Any, Literal
 from uuid import UUID
+from datetime import date
 
 from pydantic import BaseModel, Field, field_validator
 from pydantic_core import PydanticCustomError
@@ -129,6 +130,10 @@ TradeResult = Annotated[
     Field(discriminator="status"),
 ]
 
+class SnapshotInfo(BaseModel):
+    version: str = Field(description="Версия использованного набора данных")
+    as_of_date: date = Field(description="Дата рыночных данных")
+    source: str = Field(description="Источник данных")
 
 class CalculationResponse(BaseModel):
     calculation_id: UUID
@@ -145,6 +150,10 @@ class CalculationResponse(BaseModel):
             "Алгебраическая сумма успешных результатов. "
             "Если успешных результатов нет — null."
         ),
+    )
+    snapshot: SnapshotInfo | None = Field(
+        default=None,
+        description="Набор данных, выбранный для расчёта",
     )
 
 
