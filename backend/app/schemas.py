@@ -30,7 +30,7 @@ class TradeInput(BaseModel):
 
     quantity: Decimal = Field(
         allow_inf_nan=False,
-        description="Количество облигаций со знаком",
+        description="Целое количество облигаций со знаком; ноль допустим",
     )
 
     @field_validator("isin", mode="before")
@@ -83,6 +83,12 @@ class TradeInput(BaseModel):
             raise PydanticCustomError(
                 "INVALID_VALUE",
                 "Количество облигаций должно быть конечным числом",
+            )
+
+        if quantity != quantity.to_integral_value():
+            raise PydanticCustomError(
+                "INVALID_VALUE",
+                "Количество облигаций должно быть целым числом",
             )
 
         return quantity

@@ -295,3 +295,43 @@ def test_total_after_editing_one_trade(client):
     assert remaining["status"] == "SUCCESS"
     assert len(remaining["results"]) == 1
     assert Decimal(remaining["total_value"]) == Decimal("-2.375")
+
+@pytest.mark.parametrize("quantity", [10.2, -0.5])
+def test_fractional_quantity_is_rejected(client, quantity):
+    data = send_trades(
+        client,
+        [
+            {"isin": FIXED_ISIN, "quantity": quantity},
+            {"isin": FLOATING_ISIN, "quantity": 100},
+        ],
+    )
+
+    assert data["status"] == "PARTIAL_SUCCESS"
+
+    failed = data["results"][0]
+    assert failed["status"] == "ERROR"
+    assert failed["error"]["code"] == "VALIDATION_ERROR"
+    assert any(
+        detail["field"] == "quantity"
+        and detail["code"] == "INVALID_VALUE"
+        and detail["message"]
+        == "Количество облигаций должно быть целым числом"
+        for detail in failed["error"]["details"]
+    )
+
+    assert data["results"][1]["status"] == "SUCCESS"
+    assert Decimal(data["total_value"]) == Decimal("-2.375")
+
+
+@pytest.mark.parametrize("quantity", [10, 10.0, -10, 0])
+def test_integer_quantity_is_accepted(client, quantity):
+    data = send_trades(
+        client,
+        [{"isin": FLOATING_ISIN, "quantity": quantity}],
+    )
+
+    assert data["status"] == "SUCCESS"
+    assert data["results"][0]["status"] == "SUCCESS"
+
+    expected = Decimal(str(quantity)) * Decimal("-0.02375")
+    assert Decimal(data["total_value"]) == expected
