@@ -1,264 +1,340 @@
-import { useState } from 'react'
-import { DEMO_MODE, requestCalculation } from './api'
+import { useRef, useState } from 'react'
+import { DEMO_MODE, errorMessage, isValidIsin, requestCalculation } from './api'
+import type { TradeInput, TradeSuccess } from './api'
 import './App.css'
 
-type FieldErrors = {
-  isin?: string
-  amount?: string
-}
+type FieldErrors = { isin?: string; quantity?: string }
 
 type Trade = {
   id: string
   isin: string
-  amount: string
+  quantity: string
   status: 'idle' | 'loading' | 'success' | 'error' | 'stale'
-  result: number | null
+  result: TradeSuccess | null
   error: string
   fieldErrors: FieldErrors
 }
 
-type CalculationResponse = {
-  status?: string
-  metric?: string
-  result_value?: number | string | null
-  result_currency?: string
-  rate_shift_bps?: number
-  error?: { code?: string } | null
+type Summary = {
+  state: 'idle' | 'loading' | 'success' | 'partial' | 'error' | 'stale'
+  total: number | null
+  message: string
+}
+
+const initialSummary: Summary = {
+  state: 'idle',
+  total: null,
+  message: 'Добавьте сделки, укажите ISIN и количество облигаций.',
 }
 
 const money = new Intl.NumberFormat('ru-RU', {
   style: 'currency',
   currency: 'RUB',
   minimumFractionDigits: 2,
-  maximumFractionDigits: 4,
+  maximumFractionDigits: 5,
 })
 
-const serverErrors: Record<string, string> = {
-  INSTRUMENT_NOT_FOUND: 'Инструмент не найден. Проверьте ISIN.',
-  PARAMETER_SNAPSHOT_NOT_FOUND:
-    'По инструменту пока нет данных для расчёта.',
-  MISSING_INSTRUMENT_PARAMETERS:
-    'Недостаточно параметров инструмента для расчёта.',
-  INVALID_INSTRUMENT_PARAMETERS:
-    'Параметры инструмента требуют проверки.',
-  VALIDATION_ERROR: 'Проверьте ISIN и размер позиции.',
-  DEMO_INPUT_NOT_SUPPORTED:
-    'В деморежиме доступны позиции 95000 и -95000 ₽.',
+const icons = {
+  plus: 'M12 5v14M5 12h14',
+  trash: 'M3 6h18M9 6V3h6v3M5 6l1 15h12l1-15M10 10v7M14 10v7',
+  document: 'M14 2H5v20h14V7l-5-5ZM14 2v6h5M8 12h8M8 16h8',
+  check: 'm5 12 4 4 10-10',
+  warning: 'm12 3 10 18H2L12 3ZM12 9v5M12 17v.5',
 }
 
-const summaryMessages = {
-  empty: [
-    'Пока нет сделок',
-    'Добавьте сделку, чтобы начать расчёт.',
-  ],
-  idle: [
-    'Расчёт не завершён',
-    'Рассчитайте все сделки для получения общего результата.',
-  ],
-  loading: [
-    'Выполняем расчёт',
-    'Дождитесь завершения расчёта всех сделок.',
-  ],
-  error: [
-    'Не удалось получить общий результат',
-    'Проверьте сообщения в карточках и повторите расчёт.',
-  ],
-  stale: [
-    'Результат устарел',
-    'Данные изменились. Пересчитайте изменённые сделки.',
-  ],
-  success: [
-    'Расчёт выполнен',
-    'Оценка изменения общей стоимости позиций при повышении ставки на 1 б.п.',
-  ],
+function Icon({ name }: { name: keyof typeof icons }) {
+  return (
+    <svg
+      className="icon"
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="1.7"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      aria-hidden="true"
+    >
+      <path d={icons[name]} />
+    </svg>
+  )
+}
+
+function validate(trade: Trade): {
+  errors: FieldErrors
+  input: TradeInput
+} {
+  const isin = trade.isin.trim().toUpperCase()
+  const text = trade.quantity.trim().replace(/−/g, '-').replace(',', '.')
+  const quantity = Number(text)
+  const errors: FieldErrors = {}
+
+  if (!isin) {
+    errors.isin = 'Введите ISIN.'
+  } else if (!isValidIsin(isin)) {
+    errors.isin = 'Проверьте 12 символов и контрольную цифру ISIN.'
+  }
+
+  if (!text) {
+    errors.quantity = 'Введите количество облигаций.'
+  } else if (
+    !/^[+-]?(?:\d+(?:\.\d*)?|\.\d+)$/.test(text) ||
+    !Number.isFinite(quantity)
+  ) {
+    errors.quantity = 'Введите число, например 100 или -10.'
+  }
+
+  return { errors, input: { isin, quantity } }
 }
 
 function App() {
   const [trades, setTrades] = useState<Trade[]>([])
+  const [summary, setSummary] = useState<Summary>(initialSummary)
+  const [busy, setBusy] = useState(false)
+  const requestLock = useRef(false)
+
+  function invalidateSummary() {
+    setSummary((current) =>
+      current.state === 'idle'
+        ? current
+        : {
+            state: 'stale',
+            total: null,
+            message: 'Данные изменились. Выполните расчёт заново.',
+          },
+    )
+  }
 
   function addTrade() {
-    const newTrade: Trade = {
+    if (requestLock.current) return
+
+    const trade: Trade = {
       id: crypto.randomUUID(),
       isin: '',
-      amount: '',
+      quantity: '',
       status: 'idle',
       result: null,
       error: '',
       fieldErrors: {},
     }
 
-    setTrades((current) => [...current, newTrade])
+    setTrades((current) => [...current, trade])
+    invalidateSummary()
+  }
+
+  function removeTrade(id: string) {
+    if (requestLock.current) return
+
+    setTrades((current) => current.filter((trade) => trade.id !== id))
+
+    if (trades.length === 1) setSummary(initialSummary)
+    else invalidateSummary()
   }
 
   function updateTrade(
     id: string,
-    field: 'isin' | 'amount',
+    field: 'isin' | 'quantity',
     value: string,
   ) {
+    if (requestLock.current) return
+
     setTrades((current) =>
       current.map((trade): Trade => {
         if (trade.id !== id) return trade
 
-        const fieldErrors = {
-          ...trade.fieldErrors,
-          [field]: undefined,
-        }
+        const fieldErrors = { ...trade.fieldErrors, [field]: undefined }
         const hasErrors = Object.values(fieldErrors).some(Boolean)
 
         return {
           ...trade,
           [field]: field === 'isin' ? value.toUpperCase() : value,
           fieldErrors,
+          error: hasErrors ? 'Исправьте выделенные поля.' : '',
           status: hasErrors
             ? 'error'
-            : trade.result === null
-              ? 'idle'
-              : 'stale',
-          error: hasErrors ? 'Исправьте выделенные поля.' : '',
+            : trade.result !== null
+              ? 'stale'
+              : 'idle',
         }
       }),
     )
+
+    invalidateSummary()
   }
 
-  function patchTrade(id: string, changes: Partial<Trade>) {
-    setTrades((current) =>
-      current.map((trade) =>
-        trade.id === id ? { ...trade, ...changes } : trade,
-      ),
+  async function calculate() {
+    if (requestLock.current || trades.length === 0) return
+
+    const prepared = trades.map((trade) => ({
+      trade,
+      ...validate(trade),
+    }))
+
+    const valid = prepared.filter(
+      (item) => Object.keys(item.errors).length === 0,
     )
-  }
 
-  async function calculateTrade(trade: Trade) {
-    const isin = trade.isin.trim()
-    const amountText = trade.amount
-      .replace(/\s/g, '')
-      .replace(/−/g, '-')
-    const amount = Number(amountText.replace(',', '.'))
-    const fieldErrors: FieldErrors = {}
+    setTrades(
+      prepared.map(({ trade, errors, input }): Trade => ({
+        ...trade,
+        isin: input.isin,
+        result: null,
+        fieldErrors: errors,
+        status: Object.keys(errors).length ? 'error' : 'loading',
+        error: Object.keys(errors).length
+          ? 'Исправьте выделенные поля.'
+          : '',
+      })),
+    )
 
-    if (!isin) {
-      fieldErrors.isin = 'Введите ISIN.'
-    } else if (!/^[A-Z]{2}[A-Z0-9]{9}[0-9]$/.test(isin)) {
-      fieldErrors.isin =
-        'Нужен ISIN из 12 символов: первые две — буквы, последняя — цифра.'
-    }
-
-    if (!amountText) {
-      fieldErrors.amount = 'Введите сумму позиции в рублях.'
-    } else if (
-      !/^[+-]?(?:\d+(?:[.,]\d*)?|[.,]\d+)$/.test(amountText) ||
-      !Number.isFinite(amount)
-    ) {
-      fieldErrors.amount =
-        'Введите число, например 95000 или -95000.'
-    }
-
-    if (Object.keys(fieldErrors).length > 0) {
-      patchTrade(trade.id, {
-        status: 'error',
-        error: 'Исправьте выделенные поля.',
-        fieldErrors,
+    if (valid.length === 0) {
+      setSummary({
+        state: 'error',
+        total: null,
+        message: 'Нет корректных сделок. Исправьте выделенные поля.',
       })
 
-      const firstField = fieldErrors.isin ? 'isin' : 'amount'
+      const first = prepared[0]
+      const field = first.errors.isin ? 'isin' : 'quantity'
+
       document
-        .getElementById(`${firstField}-${trade.id}`)
+        .getElementById(`${field}-${first.trade.id}`)
         ?.focus()
 
       return
     }
 
-    patchTrade(trade.id, {
-      status: 'loading',
-      error: '',
-      fieldErrors: {},
+    requestLock.current = true
+    setBusy(true)
+
+    setSummary({
+      state: 'loading',
+      total: null,
+      message: 'Получаем данные и рассчитываем сделки…',
     })
 
     try {
-      const response = await requestCalculation(isin, amount)
-      const data = (await response.json()) as CalculationResponse
+      const response = await requestCalculation(
+        valid.map((item) => item.input),
+      )
 
-      if (!response.ok || data.status !== 'SUCCESS') {
-        throw new Error(
-          serverErrors[data.error?.code ?? ''] ??
-            'Не удалось выполнить расчёт. Попробуйте ещё раз.',
-        )
-      }
+      // index в ответе относится к отправленному массиву.
+      const byId = new Map(
+        response.results.map((row) => [
+          valid[row.index].trade.id,
+          row,
+        ]),
+      )
 
-      const rawValue = data.result_value
+      setTrades((current) =>
+        current.map((trade): Trade => {
+          const row = byId.get(trade.id)
+          if (!row) return trade
 
-      if (
-        (typeof rawValue !== 'number' &&
-          typeof rawValue !== 'string') ||
-        (typeof rawValue === 'string' && rawValue.trim() === '') ||
-        !Number.isFinite(Number(rawValue)) ||
-        data.metric !== 'DV01' ||
-        data.result_currency !== 'RUB' ||
-        data.rate_shift_bps !== 1
-      ) {
-        throw new Error(
-          'Сервер вернул неподходящий результат расчёта.',
-        )
-      }
+          if (row.status === 'SUCCESS') {
+            return {
+              ...trade,
+              status: 'success',
+              result: row,
+              error: '',
+              fieldErrors: {},
+            }
+          }
 
-      patchTrade(trade.id, {
-        status: 'success',
-        result: Number(rawValue),
-        error: '',
+          const fieldErrors: FieldErrors = {}
+
+          for (const detail of row.error.details) {
+            if (detail.field === 'isin') {
+              fieldErrors.isin = detail.message
+            }
+            if (detail.field === 'quantity') {
+              fieldErrors.quantity = detail.message
+            }
+          }
+
+          return {
+            ...trade,
+            status: 'error',
+            result: null,
+            error: errorMessage(row.error),
+            fieldErrors,
+          }
+        }),
+      )
+
+      const successful = response.results.filter(
+        (row) => row.status === 'SUCCESS',
+      ).length
+
+      setSummary({
+        state:
+          successful === 0
+            ? 'error'
+            : successful === trades.length
+              ? 'success'
+              : 'partial',
+        total: response.total_value,
+        message:
+          successful === 0
+            ? 'Не удалось рассчитать сделки. Причины указаны в карточках.'
+            : successful === trades.length
+              ? 'Оценка изменения стоимости всех позиций при повышении ставки на 1 б.п.'
+              : `Учтено ${successful} из ${trades.length} сделок. Сделки с ошибками в сумму не вошли.`,
       })
     } catch (error) {
-      const connectionError =
+      const unavailable =
         error instanceof TypeError ||
         error instanceof SyntaxError ||
         (error instanceof Error &&
-          ['TimeoutError', 'AbortError'].includes(error.name))
+          ['AbortError', 'TimeoutError'].includes(error.name))
 
-      patchTrade(trade.id, {
-        status: 'error',
-        error: connectionError
-          ? 'Сервис расчёта недоступен. Повторите попытку позже.'
-          : error instanceof Error
-            ? error.message
-            : 'Не удалось выполнить расчёт.',
-      })
+      const message = unavailable
+        ? 'Сервис расчёта недоступен. Проверьте запуск бэкенда и повторите попытку.'
+        : error instanceof Error
+          ? error.message
+          : 'Не удалось выполнить расчёт.'
+
+      const ids = new Set(valid.map((item) => item.trade.id))
+
+      setTrades((current) =>
+        current.map((trade): Trade =>
+          ids.has(trade.id)
+            ? {
+                ...trade,
+                status: 'error',
+                result: null,
+                error: message,
+              }
+            : trade,
+        ),
+      )
+
+      setSummary({ state: 'error', total: null, message })
+    } finally {
+      requestLock.current = false
+      setBusy(false)
     }
   }
 
-  const calculatedCount = trades.filter(
-    (trade) =>
-      trade.status === 'success' && trade.result !== null,
+  const successful = trades.filter(
+    (trade) => trade.status === 'success',
   ).length
 
-  const allCalculated =
-    trades.length > 0 && calculatedCount === trades.length
-
-  const total = allCalculated
-    ? trades.reduce((sum, trade) => sum + (trade.result ?? 0), 0)
-    : null
-
-  const summaryState =
-    trades.length === 0
-      ? 'empty'
-      : trades.some((trade) => trade.status === 'loading')
-        ? 'loading'
-        : trades.some((trade) => trade.status === 'error')
-          ? 'error'
-          : trades.some((trade) => trade.status === 'stale')
-            ? 'stale'
-            : allCalculated
-              ? 'success'
-              : 'idle'
-
-  const [summaryTitle, summaryDescription] =
-    summaryMessages[summaryState]
+  const titles = {
+    idle: 'Ожидаем расчёт',
+    loading: 'Выполняем расчёт',
+    success: 'Расчёт выполнен',
+    partial: 'Частичный результат',
+    error: 'Расчёт не завершён',
+    stale: 'Результат устарел',
+  }
 
   return (
     <main className="calculator">
       {DEMO_MODE && (
         <div className="demo-banner" role="status">
           <strong>Демонстрационный режим.</strong>{' '}
-          Учебные ответы для проверки интерфейса.
-          ISIN RU000A000008: позиции 95000 и -95000 ₽.
+          Учебные ответы, без обращения к API.
+          ISIN RU000A000008: количество 100, -100 или -10.
           ISIN RU000A000016: пример нехватки данных.
         </div>
       )}
@@ -271,230 +347,262 @@ function App() {
         </p>
       </header>
 
-      <section aria-labelledby="trades-title">
-        <div className="section-heading">
-          <h2 id="trades-title">Сделки для расчёта</h2>
-          <span className="trade-count">
-            Всего: {trades.length}
-          </span>
-        </div>
-
-        {trades.length === 0 ? (
-          <div className="empty-state">
-            <span className="empty-symbol" aria-hidden="true">
-              ＋
+      <form
+        onSubmit={(event) => {
+          event.preventDefault()
+          void calculate()
+        }}
+        noValidate
+      >
+        <section
+          aria-labelledby="trades-title"
+          aria-busy={busy}
+        >
+          <div className="section-heading">
+            <h2 id="trades-title">Сделки для расчёта</h2>
+            <span className="trade-count">
+              Всего: {trades.length}
             </span>
-            <h3>Пока нет сделок</h3>
-            <p>
-              Добавьте сделку, чтобы указать ISIN и позицию в рублях
-            </p>
           </div>
-        ) : (
-          <div className="trade-list">
-            {trades.map((trade, index) => {
-              const loading = trade.status === 'loading'
-              const errors = trade.fieldErrors ?? {}
 
-              return (
-                <article className="trade-card" key={trade.id}>
-                  <div className="trade-heading">
-                    <h3>
-                      <span className="trade-number">
-                        {index + 1}
-                      </span>
-                      Сделка {index + 1}
-                    </h3>
+          {trades.length === 0 ? (
+            <div className="empty-state">
+              <span className="empty-symbol">
+                <Icon name="document" />
+              </span>
+              <h3>Пока нет сделок</h3>
+              <p>
+                Добавьте сделку, чтобы указать ISIN
+                и количество облигаций
+              </p>
+            </div>
+          ) : (
+            <div className="trade-list">
+              {trades.map((trade, index) => (
+                <article
+                  className="trade-card"
+                  key={trade.id}
+                  aria-labelledby={`trade-title-${trade.id}`}
+                >
+                  <div className="trade-editor">
+                    <span
+                      className="trade-number"
+                      aria-hidden="true"
+                    >
+                      {index + 1}
+                    </span>
+
+                    <div className="trade-inputs">
+                      <h3 id={`trade-title-${trade.id}`}>
+                        Сделка {index + 1}
+                      </h3>
+
+                      <div className="trade-fields">
+                        <label
+                          className="field"
+                          htmlFor={`isin-${trade.id}`}
+                        >
+                          ISIN
+                          <input
+                            id={`isin-${trade.id}`}
+                            value={trade.isin}
+                            onChange={(event) =>
+                              updateTrade(
+                                trade.id,
+                                'isin',
+                                event.target.value,
+                              )
+                            }
+                            placeholder="Введите ISIN"
+                            disabled={busy}
+                            spellCheck={false}
+                            autoComplete="off"
+                            aria-invalid={Boolean(
+                              trade.fieldErrors.isin,
+                            )}
+                            aria-describedby={
+                              trade.fieldErrors.isin
+                                ? `isin-error-${trade.id}`
+                                : undefined
+                            }
+                          />
+
+                          {trade.fieldErrors.isin && (
+                            <span
+                              className="field-error"
+                              id={`isin-error-${trade.id}`}
+                            >
+                              {trade.fieldErrors.isin}
+                            </span>
+                          )}
+                        </label>
+
+                        <label
+                          className="field"
+                          htmlFor={`quantity-${trade.id}`}
+                        >
+                          Количество облигаций, шт.
+                          <input
+                            id={`quantity-${trade.id}`}
+                            value={trade.quantity}
+                            onChange={(event) =>
+                              updateTrade(
+                                trade.id,
+                                'quantity',
+                                event.target.value,
+                              )
+                            }
+                            placeholder="Например, 100"
+                            disabled={busy}
+                            inputMode="text"
+                            autoComplete="off"
+                            aria-invalid={Boolean(
+                              trade.fieldErrors.quantity,
+                            )}
+                            aria-describedby={
+                              trade.fieldErrors.quantity
+                                ? `quantity-error-${trade.id}`
+                                : undefined
+                            }
+                          />
+
+                          {trade.fieldErrors.quantity && (
+                            <span
+                              className="field-error"
+                              id={`quantity-error-${trade.id}`}
+                            >
+                              {trade.fieldErrors.quantity}
+                            </span>
+                          )}
+                        </label>
+                      </div>
+                    </div>
 
                     <button
                       type="button"
                       className="delete-button"
-                      disabled={loading}
+                      disabled={busy}
                       aria-label={`Удалить сделку ${index + 1}`}
-                      onClick={() =>
-                        setTrades((current) =>
-                          current.filter(
-                            (item) => item.id !== trade.id,
-                          ),
-                        )
-                      }
+                      onClick={() => removeTrade(trade.id)}
                     >
-                      <span aria-hidden="true">×</span>
+                      <Icon name="trash" />
                       Удалить
                     </button>
                   </div>
 
-                  <form
-                    onSubmit={(event) => {
-                      event.preventDefault()
-                      void calculateTrade(trade)
-                    }}
+                  <div
+                    className={`trade-result ${trade.status}`}
+                    role="status"
                   >
-                    <div className="trade-fields">
-                      <label
-                        className="field"
-                        htmlFor={`isin-${trade.id}`}
-                      >
-                        ISIN
-                        <input
-                          id={`isin-${trade.id}`}
-                          value={trade.isin}
-                          onChange={(event) =>
-                            updateTrade(
-                              trade.id,
-                              'isin',
-                              event.target.value,
-                            )
-                          }
-                          placeholder="Введите ISIN"
-                          maxLength={12}
-                          disabled={loading}
-                          spellCheck={false}
-                          autoComplete="off"
-                          aria-invalid={Boolean(errors.isin)}
-                          aria-describedby={
-                            errors.isin
-                              ? `isin-error-${trade.id}`
-                              : undefined
-                          }
-                        />
+                    {trade.status === 'idle' &&
+                      'Параметры инструмента подтянутся автоматически'}
 
-                        {errors.isin && (
-                          <span
-                            className="field-error"
-                            id={`isin-error-${trade.id}`}
-                          >
-                            {errors.isin}
-                          </span>
-                        )}
-                      </label>
+                    {trade.status === 'loading' && (
+                      <span className="inline-status">
+                        <span className="spinner" />
+                        Получаем параметры и выполняем расчёт…
+                      </span>
+                    )}
 
-                      <label
-                        className="field"
-                        htmlFor={`amount-${trade.id}`}
-                      >
-                        Позиция, ₽
-                        <input
-                          id={`amount-${trade.id}`}
-                          value={trade.amount}
-                          onChange={(event) =>
-                            updateTrade(
-                              trade.id,
-                              'amount',
-                              event.target.value,
-                            )
-                          }
-                          placeholder="Например, 1 000 000"
-                          inputMode="text"
-                          disabled={loading}
-                          autoComplete="off"
-                          aria-invalid={Boolean(errors.amount)}
-                          aria-describedby={
-                            errors.amount
-                              ? `amount-error-${trade.id}`
-                              : undefined
-                          }
-                        />
+                    {trade.status === 'error' && (
+                      <span className="inline-status">
+                        <Icon name="warning" />
+                        {trade.error}
+                      </span>
+                    )}
 
-                        {errors.amount && (
-                          <span
-                            className="field-error"
-                            id={`amount-error-${trade.id}`}
-                          >
-                            {errors.amount}
-                          </span>
-                        )}
-                      </label>
-                    </div>
+                    {trade.status === 'stale' && (
+                      <div className="stale-notice">
+                        <span>
+                          Данные изменились.
+                          Предыдущий результат устарел.
+                        </span>
 
-                    <div className="trade-bottom">
-                      <div
-                        className={`trade-result ${trade.status}`}
-                        role="status"
-                      >
-                        {trade.status === 'idle' &&
-                          'Результат появится после расчёта'}
-
-                        {loading &&
-                          'Получаем параметры и выполняем расчёт…'}
-
-                        {trade.status === 'success' &&
-                          trade.result !== null && (
-                            <>
-                              DV01:{' '}
-                              <strong>
-                                {money.format(trade.result)}
-                              </strong>
-                            </>
-                          )}
-
-                        {trade.status === 'stale' && (
-                          <div className="stale-notice">
-                            <span>
-                              Результат устарел.
-                              Рассчитайте сделку заново.
-                            </span>
-
-                            {trade.result !== null && (
-                              <small className="previous-result">
-                                Предыдущее значение:{' '}
-                                {money.format(trade.result)}
-                              </small>
+                        {trade.result && (
+                          <small className="previous-result">
+                            Предыдущее значение DV01:{' '}
+                            {money.format(
+                              trade.result.result_value,
                             )}
-                          </div>
+                          </small>
                         )}
-
-                        {trade.status === 'error' && trade.error}
                       </div>
+                    )}
 
-                      <button
-                        type="submit"
-                        className="calculate-button"
-                        disabled={loading}
-                      >
-                        {loading && (
-                          <span
-                            className="spinner"
-                            aria-hidden="true"
-                          />
-                        )}
+                    {trade.status === 'success' &&
+                      trade.result && (
+                        <div className="result-details">
+                          <span className="inline-status">
+                            <Icon name="check" />
+                            Расчёт выполнен
+                          </span>
 
-                        {loading
-                          ? 'Расчёт…'
-                          : trade.status === 'stale'
-                            ? 'Рассчитать заново'
-                            : 'Рассчитать'}
-                      </button>
-                    </div>
-                  </form>
+                          <span>
+                            Стоимость позиции:{' '}
+                            <b>
+                              {money.format(
+                                trade.result.position_value,
+                              )}
+                            </b>
+                          </span>
+
+                          <span>
+                            DV01:{' '}
+                            <strong>
+                              {money.format(
+                                trade.result.result_value,
+                              )}
+                            </strong>
+                          </span>
+                        </div>
+                      )}
+                  </div>
                 </article>
-              )
-            })}
+              ))}
+            </div>
+          )}
+
+          <p className="position-hint">
+            ⓘ Отрицательное количество — короткая позиция.
+            Стоимость позиции в рублях вычисляется автоматически.
+          </p>
+
+          <div className="action-bar">
+            <button
+              type="button"
+              className="add-button"
+              disabled={busy}
+              onClick={addTrade}
+            >
+              <Icon name="plus" />
+              Добавить сделку
+            </button>
+
+            <button
+              type="submit"
+              className="calculate-button"
+              disabled={busy || trades.length === 0}
+            >
+              {busy && <span className="spinner" />}
+
+              {busy
+                ? 'Расчёт…'
+                : summary.state === 'stale'
+                  ? 'Рассчитать заново'
+                  : 'Рассчитать'}
+            </button>
           </div>
-        )}
-
-        <p className="position-hint">
-          <span aria-hidden="true">ⓘ</span>
-          Отрицательная сумма — короткая позиция
-        </p>
-
-        <button
-          type="button"
-          className="add-button"
-          onClick={addTrade}
-        >
-          <span aria-hidden="true">＋</span>
-          Добавить сделку
-        </button>
-      </section>
+        </section>
+      </form>
 
       <section
-        className={`summary ${summaryState}`}
+        className={`summary ${summary.state}`}
         aria-labelledby="summary-title"
       >
         <div className="summary-heading">
           <h2 id="summary-title">Суммарная DV01</h2>
           <span className="summary-progress">
-            Рассчитано: {calculatedCount} из {trades.length}
+            Успешно: {successful} из {trades.length}
           </span>
         </div>
 
@@ -503,15 +611,32 @@ function App() {
           role="status"
           aria-atomic="true"
         >
-          <h3 className="summary-status">{summaryTitle}</h3>
+          <h3 className="summary-status">
+            {titles[summary.state]}
+          </h3>
 
           <div className="summary-value">
-            {total === null ? '—' : money.format(total)}
+            {summary.total === null
+              ? '—'
+              : money.format(summary.total)}
           </div>
 
+          {summary.state === 'partial' && (
+            <p className="partial-label">
+              По успешно рассчитанным сделкам
+            </p>
+          )}
+
           <p className="summary-description">
-            {summaryDescription}
+            {summary.message}
           </p>
+
+          {summary.total !== null && (
+            <p className="metric-hint">
+              DV01 показывает чувствительность стоимости
+              к изменению ставки, а не прибыль от сделок.
+            </p>
+          )}
         </div>
       </section>
     </main>
