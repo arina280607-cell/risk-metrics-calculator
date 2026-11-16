@@ -1,0 +1,56 @@
+---
+config:
+  theme: base
+  themeVariables:
+    attributeBackgroundColorOdd: "#FFFFFF"
+    attributeBackgroundColorEven: "#FFFFFF"
+---
+
+%% || означает «ровно один», o{ означает «ноль или несколько».
+%% связь A ||--o{ B означает, что одной записи A соответствует от нуля до
+%% нескольких записей B. Каждая запись B связана ровно с одной записью A.
+erDiagram
+    %% Снапшот объединяет параметры облигаций и курсы за одну торговую дату.
+    snapshot_batches ||--o{ instrument_parameters : "содержит параметры"
+    snapshot_batches ||--o{ fx_rates : "содержит курсы"
+
+    %% У одного выпуска облигаций могут быть параметры за разные даты.
+    instruments ||--o{ instrument_parameters : "имеет параметры по датам"
+
+    %% Курс выбирается по двум полям одновременно - snapshot_id и currency.
+    fx_rates ||--o{ instrument_parameters : "задаёт курс валюты"
+
+    %% PK - первичный ключ. Несколько полей с PK образуют один составной ключ.
+    %% FK - внешний ключ. Он может состоять из одного или нескольких полей.
+    instruments {
+        varchar(12) isin PK
+        text name
+    }
+
+    %% as_of_date должна быть уникальной, так как данные загружаются раз в сутки за прошлый торговый день.
+    snapshot_batches ["snapshot_batches - версия данных за торговый день"] {
+        bigint id PK
+        date as_of_date UK "Торговая дата"
+        text status "LOADING (загрузка снапшота) или PUBLISHED (готов к расчету)"
+        timestamptz published_at "Время публикации"
+    }
+
+    fx_rates ["fx_rates - курсы валют к рублю"]{
+        bigint snapshot_id PK,FK "Ссылка на snapshot_batches.id"
+        varchar(3) currency PK "Код валюты, например USD"
+        numeric rub_per_unit "Рубли за 1 единицу валюты"
+    }
+
+    %% isin - ссылка на выпуск в instruments
+    %% Внешний ключ (snapshot_id, currency) ссылается на fx_rates.
+    instrument_parameters ["instrument_parameters - данные облигации для расчёта"]{
+        bigint snapshot_id PK,FK
+        varchar(12) isin PK,FK
+        varchar(3) currency FK "Валюта номинала"
+        numeric nominal "Номинал одной облигации в её валюте"
+        numeric dirty_quote_percent "Котировка с НКД в процентах"
+        numeric modified_duration
+        numeric convexity
+        text coupon_type "fixed или floating"
+        integer coupon_payments_per_year "Количество купонных выплат в год"
+    }
