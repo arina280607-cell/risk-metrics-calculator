@@ -1,12 +1,10 @@
-import sqlite3
+from psycopg import Connection
 
 
-def get_latest_snapshot(
-    connection: sqlite3.Connection,
-) -> sqlite3.Row | None:
+def get_latest_snapshot(connection: Connection) -> dict | None:
     return connection.execute(
         """
-        SELECT id, version, as_of_date, source
+        SELECT id, as_of_date, published_at
         FROM snapshot_batches
         WHERE status = 'PUBLISHED'
         ORDER BY as_of_date DESC, id DESC
@@ -15,40 +13,34 @@ def get_latest_snapshot(
     ).fetchone()
 
 
-def instrument_exists(
-    connection: sqlite3.Connection,
-    isin: str,
-) -> bool:
+def instrument_exists(connection: Connection, isin: str) -> bool:
     row = connection.execute(
-        """
-        SELECT 1
-        FROM instruments
-        WHERE isin = ?
-        """,
+        "SELECT 1 FROM instruments WHERE isin = %s",
         (isin,),
     ).fetchone()
-
     return row is not None
 
 
 def get_instrument_parameters(
-    connection: sqlite3.Connection,
+    connection: Connection,
     snapshot_id: int,
     isin: str,
-) -> sqlite3.Row | None:
+) -> dict | None:
     return connection.execute(
         """
         SELECT
-            currency,
-            nominal,
-            dirty_quote_percent,
-            fx_to_rub,
-            modified_duration,
-            convexity,
-            coupon_type,
-            coupon_payments_per_year
-        FROM instrument_parameters
-        WHERE snapshot_id = ? AND isin = ?
+            p.currency,
+            p.nominal,
+            p.dirty_quote_percent,
+            f.rub_per_unit AS fx_to_rub,
+            p.modified_duration,
+            p.convexity,
+            p.coupon_type,
+            p.coupon_payments_per_year
+        FROM instrument_parameters p
+        JOIN fx_rates f
+            ON f.snapshot_id = p.snapshot_id AND f.currency = p.currency
+        WHERE p.snapshot_id = %s AND p.isin = %s
         """,
         (snapshot_id, isin),
     ).fetchone()

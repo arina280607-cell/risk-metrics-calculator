@@ -5,7 +5,6 @@ import pytest
 from fastapi.testclient import TestClient
 
 from app import database
-from app.init_demo_db import SCHEMA
 from app.main import app
 
 
@@ -17,21 +16,13 @@ NO_PARAMETERS_ISIN = "RU000A000024"
 
 
 @pytest.fixture
-def client(tmp_path, monkeypatch):
-    monkeypatch.setattr(
-        database,
-        "DATABASE_PATH",
-        tmp_path / "test.db",
-    )
-
+def client(postgres_schema):
     with closing(database.get_connection()) as connection:
-        connection.executescript(SCHEMA)
-
         with connection:
-            connection.executemany(
+            connection.cursor().executemany(
                 """
                 INSERT INTO instruments (isin, name)
-                VALUES (?, ?)
+                VALUES (%s, %s)
                 """,
                 [
                     (FIXED_ISIN, "TEST fixed"),
@@ -43,13 +34,17 @@ def client(tmp_path, monkeypatch):
             connection.execute(
                 """
                 INSERT INTO snapshot_batches
-                    (id, version, as_of_date, source, status)
+                    (id, as_of_date, status, published_at)
                 VALUES
-                    (1, 'test-v1', '2026-10-27', 'TEST', 'PUBLISHED')
+                    (1, '2026-10-27', 'PUBLISHED', '2026-10-28T08:00:00Z')
                 """
             )
 
-            connection.executemany(
+            connection.execute(
+                "INSERT INTO fx_rates VALUES (1, 'RUB', 1)"
+            )
+
+            connection.cursor().executemany(
                 """
                 INSERT INTO instrument_parameters (
                     snapshot_id,
@@ -57,23 +52,22 @@ def client(tmp_path, monkeypatch):
                     currency,
                     nominal,
                     dirty_quote_percent,
-                    fx_to_rub,
                     modified_duration,
                     convexity,
                     coupon_type,
                     coupon_payments_per_year
                 )
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
                 """,
                 [
                     (
                         1, FIXED_ISIN, "RUB",
-                        "1000", "95", "1",
+                        "1000", "95",
                         "4", "20", "fixed", 2,
                     ),
                     (
                         1, FLOATING_ISIN, "RUB",
-                        "1000", "95", "1",
+                        "1000", "95",
                         None, None, "floating", 4,
                     ),
                 ],
@@ -100,9 +94,9 @@ def test_successful_trades_and_snapshot(client):
 
     assert data["status"] == "SUCCESS"
     assert data["snapshot"] == {
-        "version": "test-v1",
+        "id": 1,
         "as_of_date": "2026-10-27",
-        "source": "TEST",
+        "published_at": "2026-10-28T08:00:00Z",
     }
 
     results = data["results"]
@@ -184,17 +178,19 @@ def test_invalid_trade_does_not_break_valid_trade(client):
 def test_latest_published_snapshot_is_used(client):
     with closing(database.get_connection()) as connection:
         with connection:
-            connection.executemany(
+            connection.cursor().executemany(
                 """
                 INSERT INTO snapshot_batches
-                    (id, version, as_of_date, source, status)
-                VALUES (?, ?, ?, ?, ?)
+                    (id, as_of_date, status, published_at)
+                VALUES (%s, %s, %s, %s)
                 """,
                 [
-                    (2, "test-v2", "2026-10-28", "TEST", "PUBLISHED"),
-                    (3, "test-v3", "2026-10-29", "TEST", "LOADING"),
+                    (2, "2026-10-28", "PUBLISHED", "2026-10-29T08:00:00Z"),
+                    (3, "2026-10-29", "LOADING", None),
                 ],
             )
+
+            connection.execute("INSERT INTO fx_rates VALUES (2, 'RUB', 1)")
 
             connection.execute(
                 """
@@ -204,14 +200,13 @@ def test_latest_published_snapshot_is_used(client):
                     currency,
                     nominal,
                     dirty_quote_percent,
-                    fx_to_rub,
                     modified_duration,
                     convexity,
                     coupon_type,
                     coupon_payments_per_year
                 )
                 VALUES (
-                    2, ?, 'RUB', '1000', '100', '1',
+                    2, %s, 'RUB', '1000', '100',
                     '4', '20', 'fixed', 2
                 )
                 """,
@@ -224,7 +219,7 @@ def test_latest_published_snapshot_is_used(client):
     )
 
     assert data["status"] == "SUCCESS"
-    assert data["snapshot"]["version"] == "test-v2"
+    assert data["snapshot"]["id"] == 2
     assert data["snapshot"]["as_of_date"] == "2026-10-28"
     assert Decimal(data["results"][0]["position_value"]) == Decimal("100000")
     assert Decimal(data["total_value"]) == Decimal("-39.99")

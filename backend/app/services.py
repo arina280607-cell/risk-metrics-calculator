@@ -1,8 +1,7 @@
-import sqlite3
-from contextlib import closing
 from decimal import Decimal, DecimalException
 from uuid import uuid4
 
+from psycopg import Connection, IsolationLevel
 from pydantic import ValidationError
 
 from app.calculator import calculate_dv01
@@ -62,7 +61,7 @@ class TradeCalculationError(Exception):
 
 
 def read_decimal(
-    parameters: sqlite3.Row,
+    parameters: dict,
     field: str,
 ) -> Decimal:
     value = parameters[field]
@@ -91,7 +90,7 @@ def read_decimal(
 
 
 def calculate_trade(
-    connection: sqlite3.Connection,
+    connection: Connection,
     snapshot_id: int | None,
     index: int,
     trade: TradeInput,
@@ -175,15 +174,16 @@ def process_calculation(
 ) -> CalculationResponse:
     results: list[TradeResult] = []
 
-    with closing(get_connection()) as connection:
-        connection.execute("BEGIN")
+    with get_connection() as connection:
+        connection.isolation_level = IsolationLevel.REPEATABLE_READ
+        connection.read_only = True
 
         snapshot = get_latest_snapshot(connection)
         snapshot_info = (
             SnapshotInfo(
-                version=snapshot["version"],
+                id=snapshot["id"],
                 as_of_date=snapshot["as_of_date"],
-                source=snapshot["source"],
+                published_at=snapshot["published_at"],
             )
             if snapshot is not None
             else None

@@ -1,7 +1,7 @@
-from contextlib import closing
 from decimal import Decimal
 
 from app.database import get_connection
+from app.init_demo_db import INSTRUMENTS
 from app.repositories import (
     get_instrument_parameters,
     get_latest_snapshot,
@@ -10,7 +10,7 @@ from app.repositories import (
 
 
 def main() -> None:
-    with closing(get_connection()) as connection:
+    with get_connection() as connection:
         snapshot = get_latest_snapshot(connection)
 
         if snapshot is None:
@@ -18,16 +18,12 @@ def main() -> None:
 
         print(
             "Снапшот:",
-            snapshot["version"],
+            snapshot["id"],
             snapshot["as_of_date"],
-            snapshot["source"],
+            snapshot["published_at"],
         )
 
-        for isin in (
-            "RU000A000008",
-            "RU000A000016",
-            "RU000A000024",
-        ):
+        for isin, _ in INSTRUMENTS:
             exists = instrument_exists(connection, isin)
 
             parameters = get_instrument_parameters(
@@ -44,6 +40,8 @@ def main() -> None:
                 continue
 
             print("Тип купона:", parameters["coupon_type"])
+            print("Валюта:", parameters["currency"])
+            print("Курс к рублю:", parameters["fx_to_rub"])
             print("Номинал:", Decimal(parameters["nominal"]))
             print(
                 "Котировка с НКД, %:",
