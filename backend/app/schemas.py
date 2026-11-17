@@ -1,7 +1,7 @@
 from decimal import Decimal
 from typing import Annotated, Any, Literal
 from uuid import UUID
-from datetime import date
+from datetime import date, datetime
 
 from pydantic import BaseModel, Field, field_validator
 from pydantic_core import PydanticCustomError
@@ -137,9 +137,9 @@ TradeResult = Annotated[
 ]
 
 class SnapshotInfo(BaseModel):
-    version: str = Field(description="Версия использованного набора данных")
+    id: int = Field(description="Идентификатор использованного набора данных")
     as_of_date: date = Field(description="Дата рыночных данных")
-    source: str = Field(description="Источник данных")
+    published_at: datetime | None = Field(description="Время публикации набора данных")
 
 class CalculationResponse(BaseModel):
     calculation_id: UUID

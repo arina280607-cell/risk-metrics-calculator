@@ -1,173 +1,86 @@
-from contextlib import closing
+from datetime import date
 
-from app.database import DATABASE_PATH, get_connection
+from app.database import get_connection
 
 
-SCHEMA = """
-CREATE TABLE IF NOT EXISTS instruments (
-    isin TEXT PRIMARY KEY,
-    name TEXT NOT NULL
-);
+# Все значения учебные, не являются данными рыночного источника.
+DEMO_DATE = date(2026, 10, 27)
+INSTRUMENTS = [
+    ("RU000A000008", "DEMO: фиксированный купон, RUB"),
+    ("RU000A000016", "DEMO: плавающий купон, RUB"),
+    ("RU000A000024", "DEMO: инструмент без параметров"),
+    ("RU000A000032", "DEMO: фиксированный купон, USD"),
+    ("RU000A000040", "DEMO: короткая облигация с фиксированным купоном, RUB"),
+    ("RU000A000057", "DEMO: отсутствует дюрация"),
+    ("RU000A000065", "DEMO: отсутствует частота купона"),
+]
 
-CREATE TABLE IF NOT EXISTS snapshot_batches (
-    id INTEGER PRIMARY KEY,
-    version TEXT NOT NULL UNIQUE,
-    as_of_date TEXT NOT NULL,
-    source TEXT NOT NULL,
-    status TEXT NOT NULL CHECK (
-        status IN ('LOADING', 'PUBLISHED')
-    )
-);
-
-CREATE TABLE IF NOT EXISTS instrument_parameters (
-    snapshot_id INTEGER NOT NULL,
-    isin TEXT NOT NULL,
-
-    currency TEXT NOT NULL,
-    nominal TEXT NOT NULL,
-    dirty_quote_percent TEXT NOT NULL,
-    fx_to_rub TEXT NOT NULL,
-
-    modified_duration TEXT,
-    convexity TEXT,
-
-    coupon_type TEXT NOT NULL CHECK (
-        coupon_type IN ('fixed', 'floating')
-    ),
-    coupon_payments_per_year INTEGER,
-
-    PRIMARY KEY (snapshot_id, isin),
-
-    FOREIGN KEY (snapshot_id)
-        REFERENCES snapshot_batches(id),
-
-    FOREIGN KEY (isin)
-        REFERENCES instruments(isin)
-);
-"""
+# isin, currency, nominal, dirty_quote_percent, modified_duration,
+# convexity, coupon_type, coupon_payments_per_year
+PARAMETERS = [
+    ("RU000A000008", "RUB", "1000", "86.5798", "3.5255", "16.2622", "fixed", 2),
+    ("RU000A000016", "RUB", "1000", "100.3000", None, None, "floating", 4),
+    ("RU000A000032", "USD", "1000", "94.7579", "2.6760", "8.7779", "fixed", 2),
+    ("RU000A000040", "RUB", "1000", "101.7833", "0.8880", "1.2158", "fixed", 2),
+    ("RU000A000057", "RUB", "1000", "86.5798", None, "16.2622", "fixed", 2),
+    ("RU000A000065", "RUB", "1000", "100.3000", None, None, "floating", None),
+]
 
 
 def initialize_demo_database() -> None:
-    with closing(get_connection()) as connection:
-        connection.executescript(SCHEMA)
+    with get_connection() as connection:
+        snapshot = connection.execute(
+            """
+            INSERT INTO snapshot_batches (as_of_date, status)
+            VALUES (%s, 'LOADING')
+            ON CONFLICT (as_of_date) DO NOTHING
+            RETURNING id
+            """,
+            (DEMO_DATE,),
+        ).fetchone()
 
-        with connection:
-            connection.executemany(
+        if snapshot is None:
+            print(f"Набор за {DEMO_DATE} уже существует и не изменён.")
+            return
+
+        snapshot_id = snapshot["id"]
+        with connection.cursor() as cursor:
+            cursor.executemany(
                 """
-                INSERT INTO instruments (isin, name)
-                VALUES (?, ?)
-                ON CONFLICT(isin) DO NOTHING
+                INSERT INTO instruments (isin, name) VALUES (%s, %s)
+                ON CONFLICT (isin) DO NOTHING
                 """,
-                [
-                    (
-                        "RU000A000008",
-                        "DEMO: облигация с фиксированным купоном",
-                    ),
-                    (
-                        "RU000A000016",
-                        "DEMO: облигация с плавающим купоном",
-                    ),
-                    (
-                        "RU000A000024",
-                        "DEMO: инструмент без параметров",
-                    ),
-                ],
+                INSTRUMENTS,
+            )
+            cursor.executemany(
+                """
+                INSERT INTO fx_rates (snapshot_id, currency, rub_per_unit)
+                VALUES (%s, %s, %s)
+                """,
+                [(snapshot_id, "RUB", "1"), (snapshot_id, "USD", "90")],
+            )
+            cursor.executemany(
+                """
+                INSERT INTO instrument_parameters (
+                    snapshot_id, isin, currency, nominal, dirty_quote_percent,
+                    modified_duration, convexity, coupon_type,
+                    coupon_payments_per_year
+                ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
+                """,
+                [(snapshot_id, *parameters) for parameters in PARAMETERS],
             )
 
-            existing = connection.execute(
-                """
-                SELECT id
-                FROM snapshot_batches
-                WHERE version = ?
-                """,
-                ("demo-v1",),
-            ).fetchone()
+        connection.execute(
+            """
+            UPDATE snapshot_batches
+            SET status = 'PUBLISHED', published_at = CURRENT_TIMESTAMP
+            WHERE id = %s
+            """,
+            (snapshot_id,),
+        )
 
-            if existing is None:
-                cursor = connection.execute(
-                    """
-                    INSERT INTO snapshot_batches (
-                        version,
-                        as_of_date,
-                        source,
-                        status
-                    )
-                    VALUES (?, ?, ?, ?)
-                    """,
-                    (
-                        "demo-v1",
-                        "2026-10-27",
-                        "DEMO",
-                        "LOADING",
-                    ),
-                )
-
-                snapshot_id = cursor.lastrowid
-
-                connection.executemany(
-                    """
-                    INSERT INTO instrument_parameters (
-                        snapshot_id,
-                        isin,
-                        currency,
-                        nominal,
-                        dirty_quote_percent,
-                        fx_to_rub,
-                        modified_duration,
-                        convexity,
-                        coupon_type,
-                        coupon_payments_per_year
-                    )
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                    """,
-                    [
-                        (
-                            snapshot_id,
-                            "RU000A000008",
-                            "RUB",
-                            "1000",
-                            "95",
-                            "1",
-                            "4",
-                            "20",
-                            "fixed",
-                            2,
-                        ),
-                        (
-                            snapshot_id,
-                            "RU000A000016",
-                            "RUB",
-                            "1000",
-                            "95",
-                            "1",
-                            None,
-                            None,
-                            "floating",
-                            4,
-                        ),
-                    ],
-                )
-
-                connection.execute(
-                    """
-                    UPDATE snapshot_batches
-                    SET status = 'PUBLISHED'
-                    WHERE id = ?
-                    """,
-                    (snapshot_id,),
-                )
-
-        instrument_count = connection.execute(
-            "SELECT COUNT(*) FROM instruments"
-        ).fetchone()[0]
-
-        parameter_count = connection.execute(
-            "SELECT COUNT(*) FROM instrument_parameters"
-        ).fetchone()[0]
-
-    print(f"Демонстрационная БД: {DATABASE_PATH}")
-    print(f"Инструментов: {instrument_count}")
-    print(f"Наборов параметров: {parameter_count}")
+    print(f"Создан учебный набор {snapshot_id} за {DEMO_DATE}.")
+    print(f"Инструментов: {len(INSTRUMENTS)}; наборов параметров: {len(PARAMETERS)}.")
 
 
 if __name__ == "__main__":

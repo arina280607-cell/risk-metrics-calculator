@@ -1,5 +1,7 @@
 # risk-metrics-calculator
 
+Запуск PostgreSQL, backend и учебные примеры DV01: [backend/README.md](backend/README.md).
+
 
 
 ## Getting started
