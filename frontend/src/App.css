@@ -418,3 +418,147 @@ button:disabled {
 .summary.success .summary-status {
   color: #496043;
 }
+/* Пакетный расчёт и обновлённые карточки */
+.icon {
+  width: 24px;
+  height: 24px;
+  flex-shrink: 0;
+}
+
+.empty-symbol .icon {
+  width: 38px;
+  height: 38px;
+}
+
+.trade-editor {
+  display: grid;
+  grid-template-columns: 44px minmax(0, 1fr) auto;
+  align-items: start;
+  gap: 18px;
+}
+
+.trade-editor > .trade-number {
+  margin-top: 4px;
+}
+
+.trade-inputs {
+  min-width: 0;
+}
+
+.trade-inputs h3 {
+  margin-bottom: 6px;
+}
+
+.trade-editor > .delete-button {
+  align-self: center;
+  padding-left: 20px;
+  border-left: 1px solid var(--border);
+  border-radius: 0;
+}
+
+.trade-card > .trade-result {
+  margin-top: 18px;
+  padding: 14px 16px;
+  border-radius: 10px;
+  background: #faf5eb;
+}
+
+.trade-card > .trade-result.success {
+  color: #496043;
+  background: #edf1e6;
+}
+
+.trade-card > .trade-result.error,
+.trade-card > .trade-result.stale {
+  background: #fff2d8;
+}
+
+.inline-status {
+  display: inline-flex;
+  align-items: center;
+  gap: 9px;
+}
+
+.trade-result .spinner {
+  flex-shrink: 0;
+  border-color: #c8bba7;
+  border-top-color: #68452c;
+}
+
+.result-details {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  column-gap: 28px;
+  row-gap: 8px;
+}
+
+.result-details b,
+.result-details strong {
+  font-variant-numeric: tabular-nums;
+}
+
+.action-bar {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 18px;
+}
+
+.action-bar > button {
+  width: 100%;
+  min-height: 58px;
+  font-size: 20px;
+}
+
+.add-button:hover:not(:disabled) {
+  background: #f5e8cf;
+}
+
+.summary.partial {
+  border-color: #d8b777;
+  background: #fff3d7b3;
+}
+
+.summary.partial .summary-status {
+  color: #80551f;
+}
+
+.partial-label {
+  margin-bottom: 8px;
+  color: #80551f;
+  font-weight: 600;
+}
+
+.metric-hint {
+  margin-top: 10px;
+  color: var(--muted);
+  font-size: 14px;
+}
+
+@media (max-width: 760px) {
+  .trade-editor {
+    grid-template-columns: 42px minmax(0, 1fr);
+    gap: 12px;
+  }
+
+  .trade-inputs .trade-fields {
+    grid-template-columns: 1fr;
+    gap: 14px;
+  }
+
+  .trade-editor > .delete-button {
+    grid-column: 2;
+    justify-self: end;
+    border-left: 0;
+    padding-left: 10px;
+  }
+
+  .action-bar {
+    grid-template-columns: 1fr;
+    gap: 12px;
+  }
+
+  .position-hint {
+    display: block;
+  }
+}
